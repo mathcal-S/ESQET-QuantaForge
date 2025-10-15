@@ -1,0 +1,117 @@
+name: ESQET Quantum Build & Artifact Generation
+
+on:
+  push:
+    branches: [ main, quantum ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  quantum-build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements-*.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libopenblas-dev liblapack-dev ffmpeg libsndfile1
+    
+    - name: Install Qiskit & Quantum Dependencies
+      run: |
+        pip install --upgrade pip setuptools wheel
+        pip install "qiskit[all]<0.47.0" qiskit-aer qiskit-ibm-runtime
+        pip install numpy scipy cryptography pqcrypto pyyaml pillow matplotlib
+        pip install librosa pydub soundfile requests python-dotenv
+    
+    - name: Build ESQET Quantum Engine
+      run: |
+        python -m compileall src/
+        python build_artifacts.py --quantum --platform android-arm64
+    
+    - name: Package Termux-Compatible Artifacts
+      run: |
+        mkdir -p dist/esqet-quantum-artifacts/
+        
+        # Pre-compiled wheels for numpy/scipy (bypasses Termux compilation)
+        pip wheel --wheel-dir dist/wheels/ numpy scipy pillow matplotlib
+        
+        # ESQET quantum simulator as standalone executable
+        pyinstaller --onefile --name esqet_quantum_sim src/quantum_simulator.py
+        
+        # Docker image for HoloNFT generation
+        docker build -f Dockerfile.esqet -t esqet-quantum:latest .
+        docker save esqet-quantum:latest | gzip > dist/esqet-docker.tar.gz
+        
+        # Pre-computed quantum circuits (JSON artifacts)
+        python src/precompute_circuits.py --output dist/quantum_circuits.json
+        
+        # Static binaries & libs
+        tar -czf dist/esqet-runtime.tar.gz \
+          dist/wheels/ \
+          dist/esqet_quantum_sim \
+          src/esqet_core.py \
+          requirements-runtime.txt \
+          LICENSE
+    
+    - name: Upload Quantum Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: esqet-quantum-${{ matrix.python-version }}-artifacts
+        path: |
+          dist/esqet-*.tar.gz
+          dist/wheels/
+          dist/quantum_circuits.json
+          src/esqet_core.py
+        retention-days: 30
+    
+    - name: Test ESQET Coherence
+      run: |
+        python -c "
+        from src.esqet_core import ESQETParams, compute_F_QC_standalone
+        params = ESQETParams()
+        f_qc = compute_F_QC_standalone(params)
+        assert f_qc > 1.5, f'Low coherence: {f_qc}'
+        print(f'✅ ESQET F_QC: {f_qc:.3f}')
+        "
+    
+    - name: Generate Deployment Guide
+      run: |
+        cat > dist/DEPLOYMENT.md << EOF
+        # ESQET Quantum Deployment Guide
+        
+        ## Termux Installation (Zero Dependencies)
+        1. Download artifacts from GitHub Actions
+        2. Extract: \`tar -xzf esqet-runtime.tar.gz\`
+        3. Install runtime: \`pip install --find-links ./wheels/ -r requirements-runtime.txt\`
+        4. Run: \`python esqet_core.py --quantum-cache ./quantum_circuits.json\`
+        
+        ## Features
+        - Pre-compiled Qiskit wheels (no compilation needed)
+        - Cached quantum circuits (offline simulation)
+        - ESQET F_QC validation: $(python -c "from src.esqet_core import compute_F_QC_standalone; print(compute_F_QC_standalone(ESQETParams()))")
+        - HoloNFT generation ready
+        
+        ## Offline Mode
+        All quantum computations use pre-cached statevectors and counts.
+        No internet required after initial artifact download.
+        EOF

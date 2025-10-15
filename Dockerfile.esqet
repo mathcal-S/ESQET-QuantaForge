@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    libopenblas-dev \
+    liblapack-dev \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements-build.txt .
+RUN pip install --no-cache-dir -r requirements-build.txt
+
+# Copy ESQET source
+COPY src/ /app/src/
+WORKDIR /app
+
+# Pre-compute quantum circuits
+RUN python src/precompute_circuits.py --output quantum_circuits.json
+
+# Runtime image (multi-stage)
+FROM python:3.11-slim
+COPY --from=0 /app/quantum_circuits.json .
+COPY --from=0 /app/src/esqet_core.py .
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir -r requirements-runtime.txt
+
+EXPOSE 8080
+CMD ["python", "esqet_core.py", "--generate-nft", "GitHub Actions Test"]

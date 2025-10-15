@@ -1,0 +1,65 @@
+name: Build ESQET HoloNFT Docker Image
+
+on:
+  push:
+    paths: ['Dockerfile.esqet', 'src/holo_nft_generator.py']
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Build & Test ESQET Docker Image
+      run: |
+        docker build -f Dockerfile.esqet -t ghcr.io/${{ github.repository }}/esqet-quantum:latest .
+        
+        # Test HoloNFT generation
+        docker run --rm ghcr.io/${{ github.repository }}/esqet-quantum:latest \
+          python -c "
+          from holo_nft_generator import generate_holo_nft
+          nft = generate_holo_nft('test', {'fib_seed': 13})
+          assert 'ipfs_uri' in nft or 'quantum_signature' in nft
+          print('✅ HoloNFT generation successful')
+          "
+    
+    - name: Push Docker Image
+      run: |
+        docker push ghcr.io/${{ github.repository }}/esqet-quantum:latest
+    
+    - name: Create Termux Deployment Script
+      run: |
+        cat > deploy-termux.sh << 'EOF'
+        #!/bin/bash
+        # ESQET Termux Deployment from GitHub Artifacts
+        
+        ESQET_DIR="$HOME/AETHER-QUANTA"
+        mkdir -p "$ESQET_DIR"
+        cd "$ESQET_DIR"
+        
+        # Download latest artifacts
+        ARTIFACT_URL="https://github.com/YOUR_USERNAME/ESQET-QuantumForge/actions/runs/LATEST_RUN_ID/artifacts/LATEST_ARTIFACT_NAME"
+        curl -L -o esqet-artifacts.tar.gz "$ARTIFACT_URL"
+        tar -xzf esqet-artifacts.tar.gz
+        
+        # Install minimal runtime
+        pip install --find-links ./wheels/ -r requirements-runtime.txt
+        
+        # Pre-load quantum circuits
+        export ESQET_QUANTUM_CACHE="./quantum_circuits.json"
+        
+        # Run ESQET
+        python esqet_core.py
+        
+        echo "🌌 ESQET Quantum Forge deployed! Offline quantum simulation ready."
+        EOF
+        chmod +x deploy-termux.sh
